@@ -211,9 +211,9 @@ test "PasetoBuilder local token with defaults" {
     var builder = PasetoBuilder.initLocal(allocator);
     defer builder.deinit();
     
-    try builder.withDefaults();
-    try builder.setIssuer("test-issuer");
-    try builder.setSubject("test-subject");
+    _ = try builder.withDefaults();
+    _ = try builder.setIssuer("test-issuer");
+    _ = try builder.setSubject("test-subject");
     
     var key = LocalKey.generate();
     defer key.deinit();
@@ -230,11 +230,11 @@ test "PasetoBuilder public token with custom claims" {
     var builder = PasetoBuilder.initPublic(allocator);
     defer builder.deinit();
     
-    try builder.setIssuer("test-issuer");
-    try builder.setSubject("test-subject");
-    try builder.setClaimNumber("custom_number", 42.0);
-    try builder.setClaimBool("custom_bool", true);
-    try builder.setFooter("custom-footer");
+    _ = try builder.setIssuer("test-issuer");
+    _ = try builder.setSubject("test-subject");
+    _ = try builder.setClaimNumber("custom_number", 42.0);
+    _ = try builder.setClaimBool("custom_bool", true);
+    _ = try builder.setFooter("custom-footer");
     
     var key_pair = keys.KeyPair.generate();
     defer key_pair.deinit();
@@ -265,8 +265,8 @@ test "PasetoBuilder with implicit assertion" {
     var builder = PasetoBuilder.initLocal(allocator);
     defer builder.deinit();
     
-    try builder.setIssuer("test-issuer");
-    try builder.setImplicit("implicit-data");
+    _ = try builder.setIssuer("test-issuer");
+    _ = try builder.setImplicit("implicit-data");
     
     var key = LocalKey.generate();
     defer key.deinit();
