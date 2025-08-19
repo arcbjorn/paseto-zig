@@ -10,6 +10,8 @@ const keys = @import("keys.zig");
 
 const SecretKey = keys.SecretKey;
 const PublicKey = keys.PublicKey;
+const Version = keys.Version;
+const Purpose = keys.Purpose;
 
 const HEADER_V4_PUBLIC = "v4.public.";
 const SIGNATURE_SIZE = 64; // Ed25519 signature size
@@ -22,6 +24,11 @@ pub fn sign(
     footer: ?[]const u8,
     implicit: ?[]const u8,
 ) ![]u8 {
+    // Algorithm Lucidity: Validate key is appropriate for v4.public
+    if (!secret_key.isKeyValidFor(.v4, .public)) {
+        return errors.Error.KeyTypeMismatch;
+    }
+    
     // Validate footer if provided
     if (footer) |f| {
         try utils.validateFooter(f);
@@ -98,6 +105,11 @@ pub fn verify(
     footer: ?[]const u8,
     implicit: ?[]const u8,
 ) ![]u8 {
+    // Algorithm Lucidity: Validate key is appropriate for v4.public
+    if (!public_key.isKeyValidFor(.v4, .public)) {
+        return errors.Error.KeyTypeMismatch;
+    }
+    
     // Check header
     if (token.len < HEADER_V4_PUBLIC.len or 
         !mem.eql(u8, token[0..HEADER_V4_PUBLIC.len], HEADER_V4_PUBLIC)) {
