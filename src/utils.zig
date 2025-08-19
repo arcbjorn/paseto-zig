@@ -153,6 +153,70 @@ pub fn rfc3339ToTimestamp(time_str: []const u8) !i64 {
     return days_since_epoch * 86400 + seconds_from_time;
 }
 
+// Footer validation constants
+const MAX_FOOTER_LENGTH = 2048; // Maximum footer length in bytes
+const MAX_FOOTER_JSON_DEPTH = 2; // Maximum JSON nesting depth
+const MAX_FOOTER_JSON_KEYS = 16; // Maximum number of keys in footer JSON
+
+/// Validate footer according to PASETO specification recommendations
+pub fn validateFooter(footer: []const u8) !void {
+    // Check maximum length
+    if (footer.len > MAX_FOOTER_LENGTH) {
+        return errors.Error.FooterTooLarge;
+    }
+    
+    // If footer is empty, it's valid
+    if (footer.len == 0) return;
+    
+    // Try to parse as JSON for additional validation
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const allocator = arena.allocator();
+    
+    const parsed = std.json.parseFromSlice(std.json.Value, allocator, footer, .{}) catch {
+        // Not valid JSON, but that's allowed for footers
+        return;
+    };
+    
+    // If it is JSON, validate depth and key count
+    try validateJsonDepth(parsed.value, 0);
+    try validateJsonKeyCount(parsed.value);
+}
+
+/// Validate JSON depth does not exceed maximum
+fn validateJsonDepth(value: std.json.Value, current_depth: u32) !void {
+    if (current_depth > MAX_FOOTER_JSON_DEPTH) {
+        return errors.Error.FooterJsonTooDeep;
+    }
+    
+    switch (value) {
+        .object => |obj| {
+            var iterator = obj.iterator();
+            while (iterator.next()) |entry| {
+                try validateJsonDepth(entry.value_ptr.*, current_depth + 1);
+            }
+        },
+        .array => |arr| {
+            for (arr.items) |item| {
+                try validateJsonDepth(item, current_depth + 1);
+            }
+        },
+        else => {}, // Primitive values don't add depth
+    }
+}
+
+/// Validate JSON key count does not exceed maximum (only for top-level object)
+fn validateJsonKeyCount(value: std.json.Value) !void {
+    switch (value) {
+        .object => |obj| {
+            if (obj.count() > MAX_FOOTER_JSON_KEYS) {
+                return errors.Error.FooterTooManyKeys;
+            }
+        },
+        else => {}, // Non-objects don't have keys to count
+    }
+}
+
 test "base64url encoding and decoding" {
     const allocator = testing.allocator;
     
@@ -214,4 +278,55 @@ test "timestamp conversion" {
     
     const parsed_timestamp = try rfc3339ToTimestamp(rfc3339);
     try testing.expect(parsed_timestamp == timestamp);
+}
+
+test "footer validation - valid cases" {
+    // Empty footer should be valid
+    try validateFooter("");
+    
+    // Simple string footer should be valid
+    try validateFooter("simple-footer");
+    
+    // Valid JSON footer should be valid
+    try validateFooter("{\"kid\":\"test-key-id\"}");
+    
+    // JSON with multiple keys (under limit) should be valid
+    try validateFooter("{\"kid\":\"test\",\"alg\":\"PASETO\",\"ver\":\"v4\"}");
+    
+    // Nested JSON (under depth limit) should be valid
+    try validateFooter("{\"metadata\":{\"kid\":\"test\"}}");
+}
+
+test "footer validation - invalid cases" {
+    // Footer too large
+    var large_footer: [MAX_FOOTER_LENGTH + 1]u8 = undefined;
+    @memset(&large_footer, 'x');
+    try testing.expectError(errors.Error.FooterTooLarge, validateFooter(&large_footer));
+    
+    // JSON too deep
+    const deep_json = "{\"a\":{\"b\":{\"c\":{\"d\":\"too deep\"}}}}";
+    try testing.expectError(errors.Error.FooterJsonTooDeep, validateFooter(deep_json));
+    
+    // Too many JSON keys
+    const many_keys = "{\"k1\":\"v1\",\"k2\":\"v2\",\"k3\":\"v3\",\"k4\":\"v4\",\"k5\":\"v5\",\"k6\":\"v6\",\"k7\":\"v7\",\"k8\":\"v8\",\"k9\":\"v9\",\"k10\":\"v10\",\"k11\":\"v11\",\"k12\":\"v12\",\"k13\":\"v13\",\"k14\":\"v14\",\"k15\":\"v15\",\"k16\":\"v16\",\"k17\":\"v17\"}";
+    try testing.expectError(errors.Error.FooterTooManyKeys, validateFooter(many_keys));
+}
+
+test "footer validation - edge cases" {
+    // Exactly at limits should be valid
+    
+    // Footer at exact max length
+    var max_footer: [MAX_FOOTER_LENGTH]u8 = undefined;
+    @memset(&max_footer, 'x');
+    try validateFooter(&max_footer);
+    
+    // JSON with exactly max keys
+    try validateFooter("{\"k1\":1,\"k2\":2,\"k3\":3,\"k4\":4,\"k5\":5,\"k6\":6,\"k7\":7,\"k8\":8,\"k9\":9,\"k10\":10,\"k11\":11,\"k12\":12,\"k13\":13,\"k14\":14,\"k15\":15,\"k16\":16}");
+    
+    // JSON at exact max depth
+    try validateFooter("{\"level1\":{\"level2\":\"value\"}}");
+    
+    // Invalid JSON should be allowed (footers don't have to be JSON)
+    try validateFooter("not-json-but-valid");
+    try validateFooter("{invalid json");
 }
