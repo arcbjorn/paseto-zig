@@ -104,12 +104,15 @@ pub const LocalKeyId = struct {
     
     /// Generate ID from local key using BLAKE2b
     pub fn fromLocalKey(key: []const u8) Self {
-        var hasher = std.crypto.hash.blake2.Blake2b224.init(.{});
+        var hasher = std.crypto.hash.blake2.Blake2b256.init(.{});
         hasher.update("paseto-local-key-id");
         hasher.update(key);
         
+        var full_hash: [32]u8 = undefined;
+        hasher.final(&full_hash);
+        
         var id: [28]u8 = undefined;
-        hasher.final(&id);
+        @memcpy(&id, full_hash[0..28]);
         return Self{ .id = id };
     }
     
@@ -165,12 +168,15 @@ pub const SecretKeyId = struct {
     
     /// Generate ID from secret key using BLAKE2b
     pub fn fromSecretKey(key: []const u8) Self {
-        var hasher = std.crypto.hash.blake2.Blake2b224.init(.{});
+        var hasher = std.crypto.hash.blake2.Blake2b256.init(.{});
         hasher.update("paseto-secret-key-id");
         hasher.update(key);
         
+        var full_hash: [32]u8 = undefined;
+        hasher.final(&full_hash);
+        
         var id: [28]u8 = undefined;
-        hasher.final(&id);
+        @memcpy(&id, full_hash[0..28]);
         return Self{ .id = id };
     }
     
