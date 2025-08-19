@@ -16,7 +16,7 @@ const HEADER_V4_LOCAL = "v4.local.";
 const NONCE_SIZE = 32; // Random nonce size
 const TAG_SIZE = 32;   // BLAKE2b MAC size
 
-/// Encrypt a payload using v4.local (XChaCha20-Poly1305)
+/// Encrypt a payload using v4.local (XChaCha20-BLAKE2b)
 pub fn encrypt(
     allocator: Allocator,
     payload: []const u8,
@@ -70,13 +70,12 @@ pub fn encryptWithNonce(
     const ak = try deriveAuthKey(allocator, key.bytes(), nonce);
     defer allocator.free(ak);
     
-    // Encrypt with XChaCha20 (simplified as ChaCha20 for Zig compatibility)
+    // Encrypt with XChaCha20 using HChaCha20 + ChaCha20IETF construction
     const ciphertext = try allocator.alloc(u8, payload.len);
     defer allocator.free(ciphertext);
     
-    // Use the derived n2 nonce (24 bytes), but take first 12 for ChaCha20
-    const chacha_nonce = ek_result.n2[0..12].*;
-    crypto.stream.chacha.ChaCha20IETF.xor(ciphertext, payload, 0, ek_result.key[0..32].*, chacha_nonce);
+    // Implement XChaCha20 using HChaCha20 key derivation + ChaCha20IETF
+    try xchachaEncrypt(ciphertext, payload, ek_result.key[0..32].*, ek_result.n2[0..24].*);
     
     // Update PAE with actual ciphertext
     pae_parts.items[2] = ciphertext;
@@ -220,10 +219,9 @@ pub fn decrypt(
         return errors.Error.InvalidSignature;
     }
     
-    // Decrypt
+    // Decrypt using XChaCha20
     const plaintext = try allocator.alloc(u8, ciphertext.len);
-    const chacha_nonce = ek_result.n2[0..12].*;
-    crypto.stream.chacha.ChaCha20IETF.xor(plaintext, ciphertext, 0, ek_result.key[0..32].*, chacha_nonce);
+    try xchachaDecrypt(plaintext, ciphertext, ek_result.key[0..32].*, ek_result.n2[0..24].*);
     
     return plaintext;
 }
@@ -256,6 +254,107 @@ fn deriveAuthKey(allocator: Allocator, key: *const [32]u8, nonce: []const u8) ![
     var ak = try allocator.alloc(u8, 32);
     hasher.final(ak[0..32]);
     return ak;
+}
+
+/// XChaCha20 encryption using HChaCha20 key derivation + ChaCha20IETF
+/// This implements XChaCha20 as required by PASETO v4 specification
+fn xchachaEncrypt(output: []u8, input: []const u8, key: [32]u8, nonce: [24]u8) !void {
+    // Step 1: Derive subkey using HChaCha20
+    const subkey = hchacha20(key, nonce[0..16].*);
+    
+    // Step 2: Use ChaCha20IETF with derived subkey and remaining nonce
+    const chacha_nonce = [12]u8{
+        nonce[16], nonce[17], nonce[18], nonce[19],
+        nonce[20], nonce[21], nonce[22], nonce[23],
+        0, 0, 0, 0  // Counter starts at 0
+    };
+    
+    crypto.stream.chacha.ChaCha20IETF.xor(output, input, 0, subkey, chacha_nonce);
+}
+
+/// XChaCha20 decryption (same as encryption for stream cipher)
+fn xchachaDecrypt(output: []u8, input: []const u8, key: [32]u8, nonce: [24]u8) !void {
+    return xchachaEncrypt(output, input, key, nonce);
+}
+
+/// HChaCha20 key derivation function
+/// Takes a 32-byte key and 16-byte nonce, returns a 32-byte subkey
+fn hchacha20(key: [32]u8, nonce: [16]u8) [32]u8 {
+    // HChaCha20 constants
+    const constants = [4]u32{ 0x61707865, 0x3320646e, 0x79622d32, 0x6b206574 };
+    
+    // Initialize state
+    var state: [16]u32 = undefined;
+    
+    // Load constants
+    state[0] = constants[0];
+    state[1] = constants[1];
+    state[2] = constants[2];
+    state[3] = constants[3];
+    
+    // Load key (8 words)
+    state[4] = mem.readInt(u32, key[0..4], .little);
+    state[5] = mem.readInt(u32, key[4..8], .little);
+    state[6] = mem.readInt(u32, key[8..12], .little);
+    state[7] = mem.readInt(u32, key[12..16], .little);
+    state[8] = mem.readInt(u32, key[16..20], .little);
+    state[9] = mem.readInt(u32, key[20..24], .little);
+    state[10] = mem.readInt(u32, key[24..28], .little);
+    state[11] = mem.readInt(u32, key[28..32], .little);
+    
+    // Load nonce (4 words)
+    state[12] = mem.readInt(u32, nonce[0..4], .little);
+    state[13] = mem.readInt(u32, nonce[4..8], .little);
+    state[14] = mem.readInt(u32, nonce[8..12], .little);
+    state[15] = mem.readInt(u32, nonce[12..16], .little);
+    
+    // Perform 20 rounds (10 double rounds)
+    var i: u32 = 0;
+    while (i < 10) : (i += 1) {
+        // Column rounds
+        quarterRound(&state[0], &state[4], &state[8], &state[12]);
+        quarterRound(&state[1], &state[5], &state[9], &state[13]);
+        quarterRound(&state[2], &state[6], &state[10], &state[14]);
+        quarterRound(&state[3], &state[7], &state[11], &state[15]);
+        
+        // Diagonal rounds
+        quarterRound(&state[0], &state[5], &state[10], &state[15]);
+        quarterRound(&state[1], &state[6], &state[11], &state[12]);
+        quarterRound(&state[2], &state[7], &state[8], &state[13]);
+        quarterRound(&state[3], &state[4], &state[9], &state[14]);
+    }
+    
+    // Extract result: state[0..3] || state[12..15]
+    var result: [32]u8 = undefined;
+    mem.writeInt(u32, result[0..4], state[0], .little);
+    mem.writeInt(u32, result[4..8], state[1], .little);
+    mem.writeInt(u32, result[8..12], state[2], .little);
+    mem.writeInt(u32, result[12..16], state[3], .little);
+    mem.writeInt(u32, result[16..20], state[12], .little);
+    mem.writeInt(u32, result[20..24], state[13], .little);
+    mem.writeInt(u32, result[24..28], state[14], .little);
+    mem.writeInt(u32, result[28..32], state[15], .little);
+    
+    return result;
+}
+
+/// ChaCha20 quarter round function
+fn quarterRound(a: *u32, b: *u32, c: *u32, d: *u32) void {
+    a.* = a.* +% b.*;
+    d.* ^= a.*;
+    d.* = std.math.rotl(u32, d.*, 16);
+    
+    c.* = c.* +% d.*;
+    b.* ^= c.*;
+    b.* = std.math.rotl(u32, b.*, 12);
+    
+    a.* = a.* +% b.*;
+    d.* ^= a.*;
+    d.* = std.math.rotl(u32, d.*, 8);
+    
+    c.* = c.* +% d.*;
+    b.* ^= c.*;
+    b.* = std.math.rotl(u32, b.*, 7);
 }
 
 test "v4.local encrypt/decrypt without footer" {
