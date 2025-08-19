@@ -107,25 +107,13 @@ pub const SecretKey = struct {
         var original_seed: [32]u8 = undefined;
         @memcpy(&original_seed, seed_bytes);
         
-        // For PASETO compatibility, we need deterministic key generation
-        // Since Zig's Ed25519 implementation is strict about canonical forms,
-        // we'll create a simple mapping that's consistent but doesn't strictly
-        // follow Ed25519 key derivation (which can fail validation)
-        
-        var key: [64]u8 = undefined;
-        
-        // First 32 bytes: use seed directly (for seed() method compatibility)
-        @memcpy(key[0..32], seed_bytes);
-        
-        // Second 32 bytes: derive public key deterministically
-        // Use a strong hash to ensure good cryptographic properties
-        var hasher = crypto.hash.sha2.Sha256.init(.{});
-        hasher.update("PASETO-v4-public-key-");
-        hasher.update(seed_bytes);
-        hasher.final(key[32..64]);
+        // Generate proper Ed25519 keypair from seed
+        var seed_array: [32]u8 = undefined;
+        @memcpy(&seed_array, seed_bytes);
+        const ed25519_keypair = try crypto.sign.Ed25519.KeyPair.generateDeterministic(seed_array);
         
         return Self{ 
-            .key = key,
+            .key = ed25519_keypair.secret_key.bytes,
             .original_seed = original_seed,
         };
     }
@@ -145,7 +133,12 @@ pub const SecretKey = struct {
     
     /// Extract the public key from this secret key
     pub fn publicKey(self: *const Self) PublicKey {
-        return PublicKey{ .key = self.key[32..64].*, .version = self.version, .purpose = self.purpose };
+        // Extract public key from Ed25519 secret key
+        const ed25519_secret = crypto.sign.Ed25519.SecretKey.fromBytes(self.key) catch {
+            // Fallback to simple extraction if Ed25519 fails
+            return PublicKey{ .key = self.key[32..64].*, .version = self.version, .purpose = self.purpose };
+        };
+        return PublicKey{ .key = ed25519_secret.publicKeyBytes(), .version = self.version, .purpose = self.purpose };
     }
     
     /// Validate that this key is appropriate for the given version and purpose
