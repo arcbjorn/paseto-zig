@@ -15,6 +15,7 @@ pub const Token = keys.Token;
 
 pub const PasetoBuilder = builder.PasetoBuilder;
 pub const PasetoParser = parser.PasetoParser;
+pub const Validator = parser.Validator;
 
 // Re-export main functions
 pub const encryptLocal = local.encrypt;
