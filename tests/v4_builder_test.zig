@@ -23,6 +23,41 @@ test "LocalBuilder basic creation" {
     try testing.expect(mem.startsWith(u8, token, "v4.local."));
 }
 
+test "LocalBuilder with all standard claims for validation" {
+    const allocator = testing.allocator;
+    
+    var builder = v4.LocalBuilder.init(allocator);
+    defer builder.deinit();
+    
+    _ = try builder.setIssuer("test-issuer");
+    _ = try builder.setSubject("test-subject");
+    _ = try builder.setAudience("test-audience");
+    _ = try builder.setJwtId("unique-jwt-id");
+    _ = try builder.withDefaults();
+    
+    var key = LocalKey.generate();
+    defer key.deinit();
+    
+    const token = try builder.build(&key);
+    defer allocator.free(token);
+    
+    try testing.expect(mem.startsWith(u8, token, "v4.local."));
+    
+    // Verify token can be parsed and contains expected claims
+    var parser = v4.PasetoParser.init(allocator);
+    _ = parser.setValidateTime(false);
+    
+    var claims = try parser.parseLocal(token, &key, null, null);
+    defer claims.deinit(allocator);
+    
+    try testing.expectEqualStrings("test-issuer", claims.issuer.?);
+    try testing.expectEqualStrings("test-subject", claims.subject.?);
+    try testing.expectEqualStrings("test-audience", claims.audience.?);
+    try testing.expectEqualStrings("unique-jwt-id", claims.jwt_id.?);
+    try testing.expect(claims.expiration != null);
+    try testing.expect(claims.issued_at != null);
+}
+
 test "LocalBuilder with defaults" {
     const allocator = testing.allocator;
     
