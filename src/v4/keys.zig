@@ -7,10 +7,36 @@ const testing = std.testing;
 const errors = @import("../errors.zig");
 const utils = @import("../utils.zig");
 
+/// PASETO version identifier for algorithm lucidity
+pub const Version = enum {
+    v4,
+    
+    pub fn toString(self: Version) []const u8 {
+        return switch (self) {
+            .v4 => "v4",
+        };
+    }
+};
+
+/// PASETO purpose identifier for algorithm lucidity
+pub const Purpose = enum {
+    local,
+    public,
+    
+    pub fn toString(self: Purpose) []const u8 {
+        return switch (self) {
+            .local => "local",
+            .public => "public",
+        };
+    }
+};
+
 /// Local key for symmetric encryption/decryption (v4.local)
 /// Uses 256-bit key for XChaCha20-Poly1305 AEAD
 pub const LocalKey = struct {
     key: [32]u8,
+    version: Version = .v4,
+    purpose: Purpose = .local,
     
     const Self = @This();
     
@@ -35,6 +61,12 @@ pub const LocalKey = struct {
         return &self.key;
     }
     
+    /// Validate that this key is appropriate for the given version and purpose
+    /// This implements Algorithm Lucidity as per PASETO specification
+    pub fn isKeyValidFor(self: *const Self, version: Version, purpose: Purpose) bool {
+        return self.version == version and self.purpose == purpose;
+    }
+    
     /// Zero out the key material
     pub fn deinit(self: *Self) void {
         utils.secureZero(&self.key);
@@ -46,6 +78,8 @@ pub const LocalKey = struct {
 pub const SecretKey = struct {
     key: [64]u8, // Ed25519 secret key is 64 bytes (32 seed + 32 public)
     original_seed: ?[32]u8 = null, // Store original seed when created from seed
+    version: Version = .v4,
+    purpose: Purpose = .public,
     
     const Self = @This();
     
@@ -111,7 +145,13 @@ pub const SecretKey = struct {
     
     /// Extract the public key from this secret key
     pub fn publicKey(self: *const Self) PublicKey {
-        return PublicKey{ .key = self.key[32..64].* };
+        return PublicKey{ .key = self.key[32..64].*, .version = self.version, .purpose = self.purpose };
+    }
+    
+    /// Validate that this key is appropriate for the given version and purpose
+    /// This implements Algorithm Lucidity as per PASETO specification
+    pub fn isKeyValidFor(self: *const Self, version: Version, purpose: Purpose) bool {
+        return self.version == version and self.purpose == purpose;
     }
     
     /// Zero out the key material
@@ -127,6 +167,8 @@ pub const SecretKey = struct {
 /// Uses Ed25519 public key
 pub const PublicKey = struct {
     key: [32]u8,
+    version: Version = .v4,
+    purpose: Purpose = .public,
     
     const Self = @This();
     
@@ -142,6 +184,12 @@ pub const PublicKey = struct {
     /// Get the raw public key bytes
     pub fn bytes(self: *const Self) *const [32]u8 {
         return &self.key;
+    }
+    
+    /// Validate that this key is appropriate for the given version and purpose
+    /// This implements Algorithm Lucidity as per PASETO specification
+    pub fn isKeyValidFor(self: *const Self, version: Version, purpose: Purpose) bool {
+        return self.version == version and self.purpose == purpose;
     }
 };
 
