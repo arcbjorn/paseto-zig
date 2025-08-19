@@ -100,6 +100,31 @@ test "v4.local with footer" {
     try testing.expectEqualStrings(payload, decrypted);
 }
 
+test "v4.local footer validation" {
+    const allocator = testing.allocator;
+    
+    var key = v4.LocalKey.generate();
+    defer key.deinit();
+    
+    const payload = "test payload";
+    
+    // Test valid JSON footer
+    const valid_footer = "{\"kid\":\"test-key-id\"}";
+    const token = try v4.encryptLocal(allocator, payload, &key, valid_footer, null);
+    defer allocator.free(token);
+    
+    const decrypted = try v4.decryptLocal(allocator, token, &key, valid_footer, null);
+    defer allocator.free(decrypted);
+    try testing.expectEqualStrings(payload, decrypted);
+    
+    // Test footer that's too large should fail
+    var large_footer: [2050]u8 = undefined;
+    @memset(&large_footer, 'x');
+    
+    try testing.expectError(errors.Error.FooterTooLarge,
+        v4.encryptLocal(allocator, payload, &key, &large_footer, null));
+}
+
 test "v4.local with empty footer" {
     const allocator = testing.allocator;
     
