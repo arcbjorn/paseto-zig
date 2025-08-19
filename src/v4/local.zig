@@ -13,8 +13,8 @@ const Version = keys.Version;
 const Purpose = keys.Purpose;
 
 const HEADER_V4_LOCAL = "v4.local.";
-const NONCE_SIZE = 32; // XChaCha20 nonce size
-const TAG_SIZE = 16;   // Poly1305 tag size
+const NONCE_SIZE = 32; // Random nonce size
+const TAG_SIZE = 32;   // BLAKE2b MAC size
 
 /// Encrypt a payload using v4.local (XChaCha20-Poly1305)
 pub fn encrypt(
@@ -52,7 +52,6 @@ pub fn encryptWithNonce(
     
     // Calculate sizes
     const footer_len = if (footer) |f| f.len else 0;
-    const ciphertext_len = payload.len + TAG_SIZE;
     
     // Build pre-authentication data using PAE
     var pae_parts = std.ArrayList([]const u8).init(allocator);
@@ -65,39 +64,39 @@ pub fn encryptWithNonce(
     if (implicit) |i| try pae_parts.append(i);
     
     // Derive encryption and authentication keys using BLAKE2b
-    const ek = try deriveKey(allocator, key.bytes(), nonce, "paseto-encryption-key");
-    defer allocator.free(ek);
+    const ek_result = try deriveEncryptionKey(allocator, key.bytes(), nonce);
+    defer allocator.free(ek_result.key);
+    defer allocator.free(ek_result.n2);
     
-    const ak = try deriveKey(allocator, key.bytes(), nonce, "paseto-auth-key-for-aead");
+    const ak = try deriveAuthKey(allocator, key.bytes(), nonce);
     defer allocator.free(ak);
     
-    // Encrypt with XChaCha20
-    var ciphertext = try allocator.alloc(u8, ciphertext_len);
+    // Encrypt with XChaCha20 (simplified as ChaCha20 for Zig compatibility)
+    const ciphertext = try allocator.alloc(u8, payload.len);
     defer allocator.free(ciphertext);
     
-    // ChaCha20 encryption (simplified)
-    const chacha_nonce = nonce[0..12].*;
-    crypto.stream.chacha.ChaCha20IETF.xor(ciphertext[0..payload.len], payload, 0, ek[0..32].*, chacha_nonce);
+    // Use the derived n2 nonce (24 bytes), but take first 12 for ChaCha20
+    const chacha_nonce = ek_result.n2[0..12].*;
+    crypto.stream.chacha.ChaCha20IETF.xor(ciphertext, payload, 0, ek_result.key[0..32].*, chacha_nonce);
     
-    // Update PAE with actual ciphertext (without tag)
-    pae_parts.items[2] = ciphertext[0..payload.len];
+    // Update PAE with actual ciphertext
+    pae_parts.items[2] = ciphertext;
     const pae_data = try utils.pae(allocator, pae_parts.items);
     defer allocator.free(pae_data);
     
-    // Generate Poly1305 tag
-    var poly1305_key: [32]u8 = undefined;
-    @memcpy(&poly1305_key, ak[0..32]);
-    
-    var tag: [16]u8 = undefined;
-    crypto.onetimeauth.Poly1305.create(&tag, pae_data, &poly1305_key);
-    @memcpy(ciphertext[payload.len..], &tag);
+    // Generate BLAKE2b MAC (32 bytes)
+    var hasher = crypto.hash.blake2.Blake2b256.init(.{ .key = ak[0..32] });
+    hasher.update(pae_data);
+    var tag: [32]u8 = undefined;
+    hasher.final(&tag);
     
     // Build final token: header + base64url(nonce + ciphertext + tag) + footer
-    const token_data = try allocator.alloc(u8, NONCE_SIZE + ciphertext_len);
+    const token_data = try allocator.alloc(u8, NONCE_SIZE + ciphertext.len + TAG_SIZE);
     defer allocator.free(token_data);
     
     @memcpy(token_data[0..NONCE_SIZE], nonce);
-    @memcpy(token_data[NONCE_SIZE..], ciphertext);
+    @memcpy(token_data[NONCE_SIZE..NONCE_SIZE + ciphertext.len], ciphertext);
+    @memcpy(token_data[NONCE_SIZE + ciphertext.len..], &tag);
     
     const encoded_data = try utils.base64urlEncode(allocator, token_data);
     defer allocator.free(encoded_data);
@@ -175,16 +174,15 @@ pub fn decrypt(
     }
     
     const nonce = decoded[0..NONCE_SIZE];
-    const ciphertext_with_tag = decoded[NONCE_SIZE..];
-    const ciphertext_len = ciphertext_with_tag.len - TAG_SIZE;
-    const ciphertext = ciphertext_with_tag[0..ciphertext_len];
-    const tag = ciphertext_with_tag[ciphertext_len..];
+    const tag = decoded[decoded.len - TAG_SIZE..];
+    const ciphertext = decoded[NONCE_SIZE..decoded.len - TAG_SIZE];
     
     // Derive keys
-    const ek = try deriveKey(allocator, key.bytes(), nonce, "paseto-encryption-key");
-    defer allocator.free(ek);
+    const ek_result = try deriveEncryptionKey(allocator, key.bytes(), nonce);
+    defer allocator.free(ek_result.key);
+    defer allocator.free(ek_result.n2);
     
-    const ak = try deriveKey(allocator, key.bytes(), nonce, "paseto-auth-key-for-aead");
+    const ak = try deriveAuthKey(allocator, key.bytes(), nonce);
     defer allocator.free(ak);
     
     // Build PAE for authentication
@@ -200,33 +198,50 @@ pub fn decrypt(
     const pae_data = try utils.pae(allocator, pae_parts.items);
     defer allocator.free(pae_data);
     
-    // Verify tag
-    var poly1305_key: [32]u8 = undefined;
-    @memcpy(&poly1305_key, ak[0..32]);
-    
-    var expected_tag: [16]u8 = undefined;
-    crypto.onetimeauth.Poly1305.create(&expected_tag, pae_data, &poly1305_key);
+    // Verify BLAKE2b MAC
+    var hasher = crypto.hash.blake2.Blake2b256.init(.{ .key = ak[0..32] });
+    hasher.update(pae_data);
+    var expected_tag: [32]u8 = undefined;
+    hasher.final(&expected_tag);
     if (!utils.constantTimeEqual(tag, &expected_tag)) {
         return errors.Error.InvalidSignature;
     }
     
     // Decrypt
-    const plaintext = try allocator.alloc(u8, ciphertext_len);
-    const chacha_nonce = nonce[0..12].*;
-    crypto.stream.chacha.ChaCha20IETF.xor(plaintext, ciphertext, 0, ek[0..32].*, chacha_nonce);
+    const plaintext = try allocator.alloc(u8, ciphertext.len);
+    const chacha_nonce = ek_result.n2[0..12].*;
+    crypto.stream.chacha.ChaCha20IETF.xor(plaintext, ciphertext, 0, ek_result.key[0..32].*, chacha_nonce);
     
     return plaintext;
 }
 
-/// Derive a key using BLAKE2b with domain separation
-fn deriveKey(allocator: Allocator, key: *const [32]u8, nonce: []const u8, info: []const u8) ![]u8 {
-    var hasher = crypto.hash.blake2.Blake2b256.init(.{ .key = &key.* });
+/// Derive encryption key and nonce using BLAKE2b (56 bytes total)
+fn deriveEncryptionKey(allocator: Allocator, key: *const [32]u8, nonce: []const u8) !struct { key: []u8, n2: []u8 } {
+    var hasher = crypto.hash.blake2.Blake2b512.init(.{ .key = &key.* });
+    hasher.update("paseto-encryption-key");
     hasher.update(nonce);
-    hasher.update(info);
     
-    var derived = try allocator.alloc(u8, 32);
-    hasher.final(derived[0..32]);
-    return derived;
+    var tmp: [64]u8 = undefined;
+    hasher.final(&tmp); // BLAKE2b512 produces 64 bytes, we take first 56
+    
+    // Split: first 32 bytes = encryption key, next 24 bytes = XChaCha20 nonce
+    const ek = try allocator.alloc(u8, 32);
+    const n2 = try allocator.alloc(u8, 24);
+    @memcpy(ek, tmp[0..32]);
+    @memcpy(n2, tmp[32..56]);
+    
+    return .{ .key = ek, .n2 = n2 };
+}
+
+/// Derive authentication key using BLAKE2b (32 bytes)
+fn deriveAuthKey(allocator: Allocator, key: *const [32]u8, nonce: []const u8) ![]u8 {
+    var hasher = crypto.hash.blake2.Blake2b256.init(.{ .key = &key.* });
+    hasher.update("paseto-auth-key-for-aead");
+    hasher.update(nonce);
+    
+    var ak = try allocator.alloc(u8, 32);
+    hasher.final(ak[0..32]);
+    return ak;
 }
 
 test "v4.local encrypt/decrypt without footer" {
