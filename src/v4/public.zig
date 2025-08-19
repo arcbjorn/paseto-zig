@@ -46,22 +46,20 @@ pub fn sign(
     const pae_data = try utils.pae(allocator, pae_parts.items);
     defer allocator.free(pae_data);
     
-    // Sign the PAE data with a simple deterministic signature
-    // For PASETO compatibility, we'll create a signature that's deterministic
-    // but doesn't rely on strict Ed25519 validation
-    var signature_bytes: [64]u8 = undefined;
-    
-    // Create signature using HMAC-SHA512 with public key part only
-    // This way verification can work with just the public key
+    // Sign the PAE data using Ed25519
+    const ed25519_secret = try crypto.sign.Ed25519.SecretKey.fromBytes(secret_key.bytes().*);
     const public_key = secret_key.publicKey();
-    var signing_key: [64]u8 = undefined;
-    @memcpy(signing_key[0..32], &public_key.key);
-    @memcpy(signing_key[32..64], &public_key.key);
+    const ed25519_public = try crypto.sign.Ed25519.PublicKey.fromBytes(public_key.key);
     
-    var hmac = crypto.auth.hmac.sha2.HmacSha512.init(&signing_key);
-    hmac.update("PASETO-v4-signature-");
-    hmac.update(pae_data);
-    hmac.final(&signature_bytes);
+    // Create keypair for signing
+    const keypair = crypto.sign.Ed25519.KeyPair{
+        .secret_key = ed25519_secret,
+        .public_key = ed25519_public,
+    };
+    
+    // Sign the PAE data
+    const signature = try keypair.sign(pae_data, null);
+    const signature_bytes = signature.toBytes();
     
     // Build token data: payload + signature
     const token_data = try allocator.alloc(u8, payload.len + SIGNATURE_SIZE);
@@ -163,35 +161,19 @@ pub fn verify(
     const pae_data = try utils.pae(allocator, pae_parts.items);
     defer allocator.free(pae_data);
     
-    // For verification, we need to validate that the signature matches what would
-    // be created with the corresponding private key for this public key
+    // Verify Ed25519 signature
     if (signature.len != SIGNATURE_SIZE) {
         return errors.Error.InvalidSignature;
     }
     
-    // Create the expected signature using the public key as part of the secret key
-    // This works because our key derivation creates the public key deterministically
-    var expected_signature: [64]u8 = undefined;
+    // Create Ed25519 signature and public key for verification
+    const ed25519_signature = crypto.sign.Ed25519.Signature.fromBytes(signature[0..SIGNATURE_SIZE].*);
+    const ed25519_public = try crypto.sign.Ed25519.PublicKey.fromBytes(public_key.key);
     
-    // Reconstruct what the signing key would have been
-    // Since our key derivation puts the seed in the first 32 bytes and derived public in the last 32,
-    // and we derive the public key deterministically, we can reverse this partially
-    var signing_key: [64]u8 = undefined;
-    
-    // We can't recover the original seed, but we can create a deterministic
-    // signature based on the public key that was provided
-    @memcpy(signing_key[0..32], &public_key.key); // Use public key as "seed"
-    @memcpy(signing_key[32..64], &public_key.key); // And as "public" part too
-    
-    var hmac = crypto.auth.hmac.sha2.HmacSha512.init(&signing_key);
-    hmac.update("PASETO-v4-signature-");
-    hmac.update(pae_data);
-    hmac.final(&expected_signature);
-    
-    // Compare signatures in constant time
-    if (!utils.constantTimeEqual(signature, &expected_signature)) {
+    // Verify the signature
+    ed25519_signature.verify(pae_data, ed25519_public) catch {
         return errors.Error.InvalidSignature;
-    }
+    };
     
     // Return verified payload
     const result = try allocator.alloc(u8, payload.len);
