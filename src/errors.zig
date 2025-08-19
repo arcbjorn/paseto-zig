@@ -21,6 +21,11 @@ pub const Error = error{
     InvalidPayload,
     PayloadTooLarge,
     
+    // Footer validation errors
+    FooterTooLarge,
+    FooterJsonTooDeep,
+    FooterTooManyKeys,
+    
     // PASERK errors
     InvalidPaserkFormat,
     InvalidPaserkType,
@@ -53,6 +58,9 @@ pub fn errorToString(err: Error) []const u8 {
         Error.InvalidJson => "Invalid JSON format",
         Error.InvalidPayload => "Invalid payload format",
         Error.PayloadTooLarge => "Payload exceeds maximum size",
+        Error.FooterTooLarge => "Footer exceeds maximum size",
+        Error.FooterJsonTooDeep => "Footer JSON nesting too deep",
+        Error.FooterTooManyKeys => "Footer has too many JSON keys",
         Error.InvalidPaserkFormat => "Invalid PASERK format",
         Error.InvalidPaserkType => "Invalid PASERK type",
         Error.InvalidPaserkVersion => "Invalid PASERK version",
