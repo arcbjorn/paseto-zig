@@ -163,7 +163,12 @@ pub const PasetoParser = struct {
         
         // Validate time claims if enabled
         if (self.validate_time) {
-            try self.validateTimeClaims(&claims);
+            self.validateTimeClaims(&claims) catch |err| {
+                // Clean up the claims before returning the error
+                var mutable_claims = claims;
+                mutable_claims.deinit(self.allocator);
+                return err;
+            };
         }
         
         return claims;
@@ -217,7 +222,7 @@ test "PasetoParser local token" {
     
     // Parse the token
     var parser = PasetoParser.init(allocator);
-    parser.setValidateTime(false); // Skip time validation for test
+    _ = parser.setValidateTime(false); // Skip time validation for test
     
     var claims = try parser.parseLocal(token, &key, null, null);
     defer claims.deinit(allocator);
@@ -248,7 +253,7 @@ test "PasetoParser public token" {
     
     // Parse the token
     var parser = PasetoParser.init(allocator);
-    parser.setValidateTime(false);
+    _ = parser.setValidateTime(false);
     
     var claims = try parser.parsePublic(token, &key_pair.public, null, null);
     defer claims.deinit(allocator);
@@ -284,7 +289,7 @@ test "PasetoParser time validation" {
         parser.parseLocal(token, &key, null, null));
     
     // Should succeed with time validation disabled
-    parser.setValidateTime(false);
+    _ = parser.setValidateTime(false);
     var claims = try parser.parseLocal(token, &key, null, null);
     claims.deinit(allocator);
 }
@@ -304,7 +309,7 @@ test "PasetoParser with footer" {
     defer allocator.free(token);
     
     var parser = PasetoParser.init(allocator);
-    parser.setValidateTime(false);
+    _ = parser.setValidateTime(false);
     
     var claims = try parser.parseLocal(token, &key, footer, null);
     defer claims.deinit(allocator);
