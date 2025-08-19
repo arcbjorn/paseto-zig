@@ -39,7 +39,18 @@ pub const Error = error{
     // Time-based errors
     TokenExpired,
     TokenNotYetValid,
+    TokenUsedBeforeIssued,
     InvalidTimeFormat,
+    
+    // Claim validation errors
+    InvalidAudience,
+    MissingAudience,
+    InvalidIssuer,
+    MissingIssuer,
+    InvalidSubject,
+    MissingSubject,
+    InvalidJwtId,
+    MissingJwtId,
 };
 
 pub fn errorToString(err: Error) []const u8 {
@@ -69,6 +80,15 @@ pub fn errorToString(err: Error) []const u8 {
         Error.Utf8Error => "UTF-8 encoding error",
         Error.TokenExpired => "Token has expired",
         Error.TokenNotYetValid => "Token is not yet valid",
+        Error.TokenUsedBeforeIssued => "Token used before it was issued",
         Error.InvalidTimeFormat => "Invalid time format",
+        Error.InvalidAudience => "Invalid audience claim",
+        Error.MissingAudience => "Missing required audience claim",
+        Error.InvalidIssuer => "Invalid issuer claim",
+        Error.MissingIssuer => "Missing required issuer claim",
+        Error.InvalidSubject => "Invalid subject claim",
+        Error.MissingSubject => "Missing required subject claim",
+        Error.InvalidJwtId => "Invalid JWT ID claim",
+        Error.MissingJwtId => "Missing required JWT ID claim",
     };
 }
