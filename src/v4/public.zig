@@ -22,6 +22,11 @@ pub fn sign(
     footer: ?[]const u8,
     implicit: ?[]const u8,
 ) ![]u8 {
+    // Validate footer if provided
+    if (footer) |f| {
+        try utils.validateFooter(f);
+    }
+    
     // Build pre-authentication data using PAE
     var pae_parts = std.ArrayList([]const u8).init(allocator);
     defer pae_parts.deinit();
@@ -106,6 +111,11 @@ pub fn verify(
     if (mem.lastIndexOf(u8, token_body, ".")) |dot_pos| {
         found_footer = token_body[dot_pos + 1..];
         token_body = token_body[0..dot_pos];
+    }
+    
+    // Validate footer if present
+    if (found_footer) |f| {
+        try utils.validateFooter(f);
     }
     
     // Verify footer matches
