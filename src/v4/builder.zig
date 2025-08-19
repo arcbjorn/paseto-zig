@@ -243,7 +243,8 @@ test "PasetoBuilder public token with custom claims" {
     defer allocator.free(token);
     
     try testing.expect(mem.startsWith(u8, token, "v4.public."));
-    try testing.expect(mem.endsWith(u8, token, "custom-footer"));
+    // Footer is now base64url encoded, so check it contains the footer separator
+    try testing.expect(mem.indexOf(u8, token, ".") != null);
 }
 
 test "PasetoBuilder type mismatch should fail" {

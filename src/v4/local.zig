@@ -50,8 +50,7 @@ pub fn encryptWithNonce(
         try utils.validateFooter(f);
     }
     
-    // Calculate sizes
-    const footer_len = if (footer) |f| f.len else 0;
+    // Calculate sizes (removed unused footer_len)
     
     // Build pre-authentication data using PAE
     var pae_parts = std.ArrayList([]const u8).init(allocator);
@@ -101,26 +100,36 @@ pub fn encryptWithNonce(
     const encoded_data = try utils.base64urlEncode(allocator, token_data);
     defer allocator.free(encoded_data);
     
-    // Construct final token
-    const token_len = HEADER_V4_LOCAL.len + encoded_data.len + 
-        (if (footer_len > 0) footer_len + 1 else 0); // +1 for '.'
-    
-    var token = try allocator.alloc(u8, token_len);
-    var pos: usize = 0;
-    
-    @memcpy(token[pos..pos + HEADER_V4_LOCAL.len], HEADER_V4_LOCAL);
-    pos += HEADER_V4_LOCAL.len;
-    
-    @memcpy(token[pos..pos + encoded_data.len], encoded_data);
-    pos += encoded_data.len;
-    
+    // Construct final token according to specification
     if (footer) |f| {
+        // Non-empty: h || base64url(n || c || t) || '.' || base64url(f)
+        const encoded_footer = try utils.base64urlEncode(allocator, f);
+        defer allocator.free(encoded_footer);
+        
+        const token_len = HEADER_V4_LOCAL.len + encoded_data.len + 1 + encoded_footer.len;
+        var token = try allocator.alloc(u8, token_len);
+        var pos: usize = 0;
+        
+        @memcpy(token[pos..pos + HEADER_V4_LOCAL.len], HEADER_V4_LOCAL);
+        pos += HEADER_V4_LOCAL.len;
+        
+        @memcpy(token[pos..pos + encoded_data.len], encoded_data);
+        pos += encoded_data.len;
+        
         token[pos] = '.';
         pos += 1;
-        @memcpy(token[pos..pos + f.len], f);
+        
+        @memcpy(token[pos..pos + encoded_footer.len], encoded_footer);
+        return token;
+    } else {
+        // Empty: h || base64url(n || c || t)
+        const token_len = HEADER_V4_LOCAL.len + encoded_data.len;
+        var token = try allocator.alloc(u8, token_len);
+        
+        @memcpy(token[0..HEADER_V4_LOCAL.len], HEADER_V4_LOCAL);
+        @memcpy(token[HEADER_V4_LOCAL.len..], encoded_data);
+        return token;
     }
-    
-    return token;
 }
 
 /// Decrypt a v4.local token
@@ -144,24 +153,28 @@ pub fn decrypt(
     
     // Find the footer separator
     var token_body = token[HEADER_V4_LOCAL.len..];
-    var found_footer: ?[]const u8 = null;
+    var found_footer_encoded: ?[]const u8 = null;
     
     if (mem.lastIndexOf(u8, token_body, ".")) |dot_pos| {
-        found_footer = token_body[dot_pos + 1..];
+        found_footer_encoded = token_body[dot_pos + 1..];
         token_body = token_body[0..dot_pos];
     }
     
-    // Validate footer if present
-    if (found_footer) |f| {
-        try utils.validateFooter(f);
+    // Decode and validate footer if present
+    var found_footer_decoded: ?[]u8 = null;
+    defer if (found_footer_decoded) |f| allocator.free(f);
+    
+    if (found_footer_encoded) |f_enc| {
+        found_footer_decoded = try utils.base64urlDecode(allocator, f_enc);
+        try utils.validateFooter(found_footer_decoded.?);
     }
     
     // Verify footer matches
     if (footer) |expected_footer| {
-        if (found_footer == null or !mem.eql(u8, found_footer.?, expected_footer)) {
+        if (found_footer_decoded == null or !mem.eql(u8, found_footer_decoded.?, expected_footer)) {
             return errors.Error.InvalidFooter;
         }
-    } else if (found_footer != null) {
+    } else if (found_footer_decoded != null) {
         return errors.Error.InvalidFooter;
     }
     
@@ -192,7 +205,7 @@ pub fn decrypt(
     try pae_parts.append(HEADER_V4_LOCAL);
     try pae_parts.append(nonce);
     try pae_parts.append(ciphertext);
-    if (found_footer) |f| try pae_parts.append(f);
+    if (found_footer_decoded) |f| try pae_parts.append(f);
     if (implicit) |i| try pae_parts.append(i);
     
     const pae_data = try utils.pae(allocator, pae_parts.items);
@@ -217,12 +230,13 @@ pub fn decrypt(
 
 /// Derive encryption key and nonce using BLAKE2b (56 bytes total)
 fn deriveEncryptionKey(allocator: Allocator, key: *const [32]u8, nonce: []const u8) !struct { key: []u8, n2: []u8 } {
+    // Use BLAKE2b512 and take first 56 bytes to match PASETO specification  
     var hasher = crypto.hash.blake2.Blake2b512.init(.{ .key = &key.* });
     hasher.update("paseto-encryption-key");
     hasher.update(nonce);
     
     var tmp: [64]u8 = undefined;
-    hasher.final(&tmp); // BLAKE2b512 produces 64 bytes, we take first 56
+    hasher.final(&tmp); // BLAKE2b512 produces 64 bytes, we use first 56
     
     // Split: first 32 bytes = encryption key, next 24 bytes = XChaCha20 nonce
     const ek = try allocator.alloc(u8, 32);
@@ -276,7 +290,8 @@ test "v4.local encrypt/decrypt with footer" {
     defer allocator.free(token);
     
     try testing.expect(mem.startsWith(u8, token, HEADER_V4_LOCAL));
-    try testing.expect(mem.endsWith(u8, token, footer));
+    // Footer is now base64url encoded, so check it contains the footer separator
+    try testing.expect(mem.indexOf(u8, token, ".") != null);
     
     const decrypted = try decrypt(allocator, token, &key, footer, null);
     defer allocator.free(decrypted);

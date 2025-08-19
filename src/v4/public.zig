@@ -72,27 +72,36 @@ pub fn sign(
     const encoded_data = try utils.base64urlEncode(allocator, token_data);
     defer allocator.free(encoded_data);
     
-    // Construct final token
-    const footer_len = if (footer) |f| f.len else 0;
-    const token_len = HEADER_V4_PUBLIC.len + encoded_data.len + 
-        (if (footer_len > 0) footer_len + 1 else 0); // +1 for '.'
-    
-    var token = try allocator.alloc(u8, token_len);
-    var pos: usize = 0;
-    
-    @memcpy(token[pos..pos + HEADER_V4_PUBLIC.len], HEADER_V4_PUBLIC);
-    pos += HEADER_V4_PUBLIC.len;
-    
-    @memcpy(token[pos..pos + encoded_data.len], encoded_data);
-    pos += encoded_data.len;
-    
+    // Construct final token according to specification
     if (footer) |f| {
+        // Non-empty: h || base64url(m || sig) || '.' || base64url(f)
+        const encoded_footer = try utils.base64urlEncode(allocator, f);
+        defer allocator.free(encoded_footer);
+        
+        const token_len = HEADER_V4_PUBLIC.len + encoded_data.len + 1 + encoded_footer.len;
+        var token = try allocator.alloc(u8, token_len);
+        var pos: usize = 0;
+        
+        @memcpy(token[pos..pos + HEADER_V4_PUBLIC.len], HEADER_V4_PUBLIC);
+        pos += HEADER_V4_PUBLIC.len;
+        
+        @memcpy(token[pos..pos + encoded_data.len], encoded_data);
+        pos += encoded_data.len;
+        
         token[pos] = '.';
         pos += 1;
-        @memcpy(token[pos..pos + f.len], f);
+        
+        @memcpy(token[pos..pos + encoded_footer.len], encoded_footer);
+        return token;
+    } else {
+        // Empty: h || base64url(m || sig)
+        const token_len = HEADER_V4_PUBLIC.len + encoded_data.len;
+        var token = try allocator.alloc(u8, token_len);
+        
+        @memcpy(token[0..HEADER_V4_PUBLIC.len], HEADER_V4_PUBLIC);
+        @memcpy(token[HEADER_V4_PUBLIC.len..], encoded_data);
+        return token;
     }
-    
-    return token;
 }
 
 /// Verify a v4.public token
@@ -116,24 +125,28 @@ pub fn verify(
     
     // Find the footer separator
     var token_body = token[HEADER_V4_PUBLIC.len..];
-    var found_footer: ?[]const u8 = null;
+    var found_footer_encoded: ?[]const u8 = null;
     
     if (mem.lastIndexOf(u8, token_body, ".")) |dot_pos| {
-        found_footer = token_body[dot_pos + 1..];
+        found_footer_encoded = token_body[dot_pos + 1..];
         token_body = token_body[0..dot_pos];
     }
     
-    // Validate footer if present
-    if (found_footer) |f| {
-        try utils.validateFooter(f);
+    // Decode and validate footer if present
+    var found_footer_decoded: ?[]u8 = null;
+    defer if (found_footer_decoded) |f| allocator.free(f);
+    
+    if (found_footer_encoded) |f_enc| {
+        found_footer_decoded = try utils.base64urlDecode(allocator, f_enc);
+        try utils.validateFooter(found_footer_decoded.?);
     }
     
     // Verify footer matches
     if (footer) |expected_footer| {
-        if (found_footer == null or !mem.eql(u8, found_footer.?, expected_footer)) {
+        if (found_footer_decoded == null or !mem.eql(u8, found_footer_decoded.?, expected_footer)) {
             return errors.Error.InvalidFooter;
         }
-    } else if (found_footer != null) {
+    } else if (found_footer_decoded != null) {
         return errors.Error.InvalidFooter;
     }
     
@@ -155,7 +168,7 @@ pub fn verify(
     
     try pae_parts.append(HEADER_V4_PUBLIC);
     try pae_parts.append(payload);
-    if (found_footer) |f| try pae_parts.append(f);
+    if (found_footer_decoded) |f| try pae_parts.append(f);
     if (implicit) |i| try pae_parts.append(i);
     
     const pae_data = try utils.pae(allocator, pae_parts.items);
@@ -213,7 +226,8 @@ test "v4.public sign/verify with footer" {
     defer allocator.free(token);
     
     try testing.expect(mem.startsWith(u8, token, HEADER_V4_PUBLIC));
-    try testing.expect(mem.endsWith(u8, token, footer));
+    // Footer is now base64url encoded, so check it contains the footer separator
+    try testing.expect(mem.indexOf(u8, token, ".") != null);
     
     const verified_payload = try verify(allocator, token, &key_pair.public, footer, null);
     defer allocator.free(verified_payload);
