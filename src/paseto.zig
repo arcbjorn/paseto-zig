@@ -15,6 +15,7 @@ pub const KeyPair = v4.KeyPair;
 pub const LocalKey = v4.LocalKey;
 pub const PasetoBuilder = v4.PasetoBuilder;
 pub const PasetoParser = v4.PasetoParser;
+pub const Validator = v4.Validator;
 
 // Re-export PASERK types
 pub const PaserkType = paserk.PaserkType;
