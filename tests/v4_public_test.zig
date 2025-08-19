@@ -493,3 +493,27 @@ test "v4.public payload tampering detection" {
     try testing.expect(!mem.eql(u8, original_payload, tampered_payload));
     try testing.expect(!mem.eql(u8, token, tampered_token));
 }
+
+test "v4.public footer validation" {
+    const allocator = testing.allocator;
+    
+    var keypair = v4.KeyPair.generate();
+    defer keypair.deinit();
+    
+    const payload = "test payload";
+    
+    // Test valid JSON footer
+    const valid_footer = "{\"alg\":\"PASETO\",\"kid\":\"public-key-id\"}";
+    const token = try v4.signPublic(allocator, payload, &keypair.secret, valid_footer, null);
+    defer allocator.free(token);
+    
+    const verified = try v4.verifyPublic(allocator, token, &keypair.public, valid_footer, null);
+    defer allocator.free(verified);
+    try testing.expectEqualStrings(payload, verified);
+    
+    // Test footer with too many JSON keys should fail
+    const many_keys_footer = "{\"k1\":\"v1\",\"k2\":\"v2\",\"k3\":\"v3\",\"k4\":\"v4\",\"k5\":\"v5\",\"k6\":\"v6\",\"k7\":\"v7\",\"k8\":\"v8\",\"k9\":\"v9\",\"k10\":\"v10\",\"k11\":\"v11\",\"k12\":\"v12\",\"k13\":\"v13\",\"k14\":\"v14\",\"k15\":\"v15\",\"k16\":\"v16\",\"k17\":\"v17\"}";
+    
+    try testing.expectError(errors.Error.FooterTooManyKeys,
+        v4.signPublic(allocator, payload, &keypair.secret, many_keys_footer, null));
+}
