@@ -9,6 +9,8 @@ const utils = @import("../utils.zig");
 const keys = @import("keys.zig");
 
 const LocalKey = keys.LocalKey;
+const Version = keys.Version;
+const Purpose = keys.Purpose;
 
 const HEADER_V4_LOCAL = "v4.local.";
 const NONCE_SIZE = 32; // XChaCha20 nonce size
@@ -38,6 +40,11 @@ pub fn encryptWithNonce(
     footer: ?[]const u8,
     implicit: ?[]const u8,
 ) ![]u8 {
+    // Algorithm Lucidity: Validate key is appropriate for v4.local
+    if (!key.isKeyValidFor(.v4, .local)) {
+        return errors.Error.KeyTypeMismatch;
+    }
+    
     // Validate footer if provided
     if (footer) |f| {
         try utils.validateFooter(f);
@@ -125,6 +132,11 @@ pub fn decrypt(
     footer: ?[]const u8,
     implicit: ?[]const u8,
 ) ![]u8 {
+    // Algorithm Lucidity: Validate key is appropriate for v4.local
+    if (!key.isKeyValidFor(.v4, .local)) {
+        return errors.Error.KeyTypeMismatch;
+    }
+    
     // Check header
     if (token.len < HEADER_V4_LOCAL.len or 
         !mem.eql(u8, token[0..HEADER_V4_LOCAL.len], HEADER_V4_LOCAL)) {
