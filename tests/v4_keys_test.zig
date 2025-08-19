@@ -331,3 +331,83 @@ test "key validation edge cases" {
     const local_key3 = try v4.LocalKey.fromBytes(&pattern_key);
     try testing.expectEqualSlices(u8, &pattern_key, local_key3.bytes());
 }
+
+test "Algorithm Lucidity - Key type identification" {
+    // Test that keys correctly identify their version and purpose
+    
+    // Local key should identify as v4.local
+    var local_key = v4.LocalKey.generate();
+    defer local_key.deinit();
+    
+    try testing.expect(local_key.isKeyValidFor(.v4, .local));
+    try testing.expect(!local_key.isKeyValidFor(.v4, .public));
+    
+    // Secret key should identify as v4.public
+    var secret_key = v4.SecretKey.generate();
+    defer secret_key.deinit();
+    
+    try testing.expect(secret_key.isKeyValidFor(.v4, .public));
+    try testing.expect(!secret_key.isKeyValidFor(.v4, .local));
+    
+    // Public key should identify as v4.public
+    const public_key = secret_key.publicKey();
+    try testing.expect(public_key.isKeyValidFor(.v4, .public));
+    try testing.expect(!public_key.isKeyValidFor(.v4, .local));
+}
+
+test "Algorithm Lucidity - Prevents key confusion attacks" {
+    const allocator = testing.allocator;
+    
+    var local_key = v4.LocalKey.generate();
+    defer local_key.deinit();
+    
+    // Manually corrupt the purpose to simulate an attack
+    local_key.purpose = .public; // Wrong purpose for local key
+    
+    const payload = "test payload";
+    
+    // Should fail during encryption due to algorithm lucidity
+    try testing.expectError(errors.Error.KeyTypeMismatch,
+        v4.encryptLocal(allocator, payload, &local_key, null, null));
+}
+
+test "Algorithm Lucidity - Public key confusion prevention" {
+    const allocator = testing.allocator;
+    
+    var key_pair = v4.KeyPair.generate();
+    defer key_pair.deinit();
+    
+    // Create a valid token first
+    const payload = "test payload";
+    const token = try v4.signPublic(allocator, payload, &key_pair.secret, null, null);
+    defer allocator.free(token);
+    
+    // Corrupt the public key's purpose
+    var public_key = key_pair.public;
+    public_key.purpose = .local; // Wrong purpose
+    
+    // Should fail during verification
+    try testing.expectError(errors.Error.KeyTypeMismatch,
+        v4.verifyPublic(allocator, token, &public_key, null, null));
+}
+
+test "Algorithm Lucidity - Version and Purpose enums" {
+    try testing.expectEqualStrings("v4", v4.Version.v4.toString());
+    try testing.expectEqualStrings("local", v4.Purpose.local.toString());
+    try testing.expectEqualStrings("public", v4.Purpose.public.toString());
+}
+
+test "Algorithm Lucidity - Key derivation preserves type" {
+    var secret_key = v4.SecretKey.generate();
+    defer secret_key.deinit();
+    
+    const public_key = secret_key.publicKey();
+    
+    // Both should be v4.public
+    try testing.expect(secret_key.isKeyValidFor(.v4, .public));
+    try testing.expect(public_key.isKeyValidFor(.v4, .public));
+    
+    // Neither should be local
+    try testing.expect(!secret_key.isKeyValidFor(.v4, .local));
+    try testing.expect(!public_key.isKeyValidFor(.v4, .local));
+}
